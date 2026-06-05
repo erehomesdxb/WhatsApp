@@ -24,21 +24,39 @@ function relTime(iso?: string | null) {
   return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
+// yyyy-mm-dd <-> Date helpers for the date-range filter (local time).
+const pad = (n: number) => String(n).padStart(2, "0");
+const toDateInput = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const QUICK: [string, number][] = [["7d", 7], ["30d", 30], ["90d", 90]];
+
 export default function Dashboard() {
   const router = useRouter();
   const go = (p: string) => router.push(p);
   const [kpis, setKpis] = useState({ conversations: 128, response: 94, campaigns: 3, leads: 17 });
   const [recent, setRecent] = useState<Recent[]>(RECENT as Recent[]);
 
+  // Date-range filter: KPIs reflect [from, to]. Default to the last 7 days.
+  const [to, setTo] = useState(() => toDateInput(new Date()));
+  const [from, setFrom] = useState(() => toDateInput(new Date(Date.now() - 7 * 86400000)));
+  const setQuick = (days: number) => { const n = new Date(); setTo(toDateInput(n)); setFrom(toDateInput(new Date(n.getTime() - days * 86400000))); };
+
   // Best-effort: hydrate KPIs and the recent list from the live backend; the
   // fixtures above stand in when Supabase/Twilio aren't configured.
   useEffect(() => {
     (async () => {
       const sb = supabaseBrowser();
-      const [insR, convR, campR] = await Promise.allSettled([
-        fetch("/api/insights?days=1").then((r) => r.json()),
+      // Inclusive window: [from 00:00, to 23:59:59] in local time, as ISO.
+      const fromISO = new Date(from + "T00:00:00").toISOString();
+      const toISO = new Date(to + "T23:59:59.999").toISOString();
+      const [insR, convR, campR, leadR] = await Promise.allSettled([
+        fetch(`/api/insights?from=${encodeURIComponent(fromISO)}&to=${encodeURIComponent(toISO)}`).then((r) => r.json()),
         sb.from("conversations").select("*").order("last_at", { ascending: false }).limit(50),
         sb.from("campaigns").select("id,status").in("status", ["sending", "scheduled"]),
+        // Real lead count: contacts who replied positively (Hot/Warm temperature)
+        // and were created in the selected window. "new"/"cold" aren't callable, so
+        // they're excluded. Exact count — no fixture fallback.
+        sb.from("conversations").select("id", { count: "exact", head: true })
+          .in("lead_status", ["hot", "warm"]).gte("created_at", fromISO).lte("created_at", toISO),
       ]);
 
       const next = { ...kpis };
@@ -46,9 +64,6 @@ export default function Dashboard() {
       if (convR.status === "fulfilled" && (convR.value as any).data?.length) {
         convs = (convR.value as any).data;
         next.conversations = convs.length;
-        const weekAgo = Date.now() - 7 * 86400000;
-        const leads = convs.filter((c) => ["hot", "warm"].includes((c.lead_status || "").toLowerCase()) && (!c.created_at || new Date(c.created_at).getTime() > weekAgo));
-        if (leads.length) next.leads = leads.length;
       }
       if (insR.status === "fulfilled" && insR.value?.totals) {
         const t = insR.value.totals;
@@ -56,6 +71,8 @@ export default function Dashboard() {
         if (typeof t.outbound === "number" && t.outbound + t.inbound > 0) next.conversations = t.outbound + t.inbound;
       }
       if (campR.status === "fulfilled" && (campR.value as any).data) next.campaigns = (campR.value as any).data.length;
+      // Accurate leads: use the exact count when the query succeeds (including 0).
+      if (leadR.status === "fulfilled" && typeof (leadR.value as any).count === "number") next.leads = (leadR.value as any).count;
       setKpis(next);
 
       if (convs.length) {
@@ -70,7 +87,7 @@ export default function Dashboard() {
       }
     })().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [from, to]);
 
   return (
     <div className="page"><div className="maxw">
@@ -79,11 +96,22 @@ export default function Dashboard() {
         <button className="btn btn-primary" onClick={() => go("/inbox")}><Icon d={IC.inbox} s={15} />Open inbox</button>
       </PageHead>
 
+      <div className="toolbar" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <div className="seg">
+          {QUICK.map(([id, d]) => (
+            <button key={id} className={Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86400000) === d ? "on" : ""} onClick={() => setQuick(d)}>{id}</button>
+          ))}
+        </div>
+        <input type="date" className="input" style={{ width: 150, marginBottom: 0 }} value={from} max={to} onChange={(e) => setFrom(e.target.value)} title="From" />
+        <span style={{ color: "var(--ink-3)" }}>→</span>
+        <input type="date" className="input" style={{ width: 150, marginBottom: 0 }} value={to} min={from} onChange={(e) => setTo(e.target.value)} title="To" />
+      </div>
+
       <div className="kpis k4">
-        <div className="kpi"><div className="kl">Conversations today</div><div className="kv">{kpis.conversations}</div></div>
+        <div className="kpi"><div className="kl">Conversations</div><div className="kv">{kpis.conversations}</div></div>
         <div className="kpi"><div className="kl">Response rate</div><div className="kv">{kpis.response}%</div></div>
         <div className="kpi"><div className="kl">Active campaigns</div><div className="kv">{kpis.campaigns}</div></div>
-        <div className="kpi"><div className="kl">New leads this week</div><div className="kv">{kpis.leads}</div></div>
+        <div className="kpi"><div className="kl">New leads</div><div className="kv">{kpis.leads}</div><div className="ks">replied positively (Hot/Warm)</div></div>
       </div>
 
       <div className="grid-2">
