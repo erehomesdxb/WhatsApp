@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Icon, IC, Avatar, useModCombo, Toast } from "@/lib/ui";
-import { SENDERS, type Sender } from "@/lib/fixtures";
+import { type Sender } from "@/lib/types";
 import { supabaseBrowser } from "@/lib/supabase";
 import { formatPhone } from "@/lib/format";
 
@@ -83,11 +83,11 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 /* ── Sidebar ── */
 function Sidebar({ path, open, isMobile, onClose, closeOnNav }: { path: string; open: boolean; isMobile: boolean; onClose: () => void; closeOnNav: () => void }) {
   const [acctOpen, setAcctOpen] = useState(false);
-  const [senders, setSenders] = useState<Sender[]>(SENDERS);
-  const [senderId, setSenderId] = useState<string>(SENDERS[0].id);
-  const [unread, setUnread] = useState<number>(7);
+  const [senders, setSenders] = useState<Sender[]>([]);
+  const [senderId, setSenderId] = useState<string>("");
+  const [unread, setUnread] = useState<number>(0);
 
-  // Load real WhatsApp senders; fall back to the fixtures.
+  // Load the real WhatsApp senders configured on the Twilio account.
   useEffect(() => {
     let live = true;
     fetch("/api/senders")
@@ -95,25 +95,16 @@ function Sidebar({ path, open, isMobile, onClose, closeOnNav }: { path: string; 
       .then((d) => {
         if (!live) return;
         const nums: string[] = d.senders || [];
-        if (nums.length) {
-          const real: Sender[] = nums.map((n, i) => ({ id: n, sub: i === 0 ? "ERE Homes" : "ERE Homes", label: i === 0 ? "Main line" : `Number ${i + 1}`, number: formatPhone(n) }));
-          setSenders(real);
-          const stored = localStorage.getItem("om_sender");
-          setSenderId(real.find((s) => s.id === stored) ? stored! : real[0].id);
-        } else {
-          const stored = localStorage.getItem("om_sender");
-          if (stored && SENDERS.find((s) => s.id === stored)) setSenderId(stored);
-        }
-      })
-      .catch(() => {
+        const real: Sender[] = nums.map((n, i) => ({ id: n, sub: "ERE Homes", label: i === 0 ? "Main line" : `Number ${i + 1}`, number: formatPhone(n) }));
+        setSenders(real);
         const stored = localStorage.getItem("om_sender");
-        if (stored && SENDERS.find((s) => s.id === stored)) setSenderId(stored);
-      });
+        if (real.length) setSenderId(real.find((s) => s.id === stored) ? stored! : real[0].id);
+      })
+      .catch(() => {});
     return () => { live = false; };
   }, []);
 
-  // Live unread badge (Supabase). Falls back to the prototype's "7" when the
-  // backend isn't configured.
+  // Live unread badge (Supabase).
   useEffect(() => {
     const sb = supabaseBrowser();
     let live = true;
@@ -136,7 +127,9 @@ function Sidebar({ path, open, isMobile, onClose, closeOnNav }: { path: string; 
     return () => { live = false; if (ch) try { sb.removeChannel(ch); } catch { /* ignore */ } };
   }, []);
 
-  const sender = senders.find((s) => s.id === senderId) || senders[0];
+  const FALLBACK: Sender = { id: "", sub: "ERE Homes", label: "Messaging", number: "" };
+  const sender = senders.find((s) => s.id === senderId) || senders[0] || FALLBACK;
+  const hasSenders = senders.length > 0;
   const pick = (id: string) => { setSenderId(id); localStorage.setItem("om_sender", id); setAcctOpen(false); };
 
   return (
@@ -149,12 +142,12 @@ function Sidebar({ path, open, isMobile, onClose, closeOnNav }: { path: string; 
 
       <div className="side-acct-wrap">
         {acctOpen && <div className="acct-scrim" onClick={() => setAcctOpen(false)} />}
-        <button className={`side-acct ${acctOpen ? "on" : ""}`} onClick={() => setAcctOpen((o) => !o)}>
+        <button className={`side-acct ${acctOpen ? "on" : ""}`} onClick={() => hasSenders && setAcctOpen((o) => !o)} style={{ cursor: hasSenders ? "pointer" : "default" }}>
           <div className="av">{initials(sender.label)}</div>
-          <div className="lbl"><div className="a">{sender.sub} · {sender.label}</div><div className="b">{sender.number}</div></div>
-          <span className="cv"><Icon d={IC.cdown} s={14} /></span>
+          <div className="lbl"><div className="a">{sender.sub} · {sender.label}</div><div className="b">{sender.number || "No sender configured"}</div></div>
+          {hasSenders && senders.length > 1 && <span className="cv"><Icon d={IC.cdown} s={14} /></span>}
         </button>
-        {acctOpen && (
+        {acctOpen && hasSenders && (
           <div className="acct-menu">
             <div className="acct-menu-h">Switch WhatsApp sender</div>
             {senders.map((s) => (
@@ -242,12 +235,12 @@ function TopBar({ path, navOpen, onMenu }: { path: string; navOpen: boolean; onM
       <button className="icon-btn" title="Turn on lead alerts" onClick={enableAlerts}><Icon d={IC.bell} s={18} /><span className="ping" /></button>
       <a className="icon-btn" href="https://www.twilio.com/docs/whatsapp" target="_blank" rel="noreferrer" title="Help"><Icon d={IC.help} s={18} /></a>
       <div className="top-avatar">
-        <span onClick={() => setMenuOpen((o) => !o)}><Avatar name="Karim Rahimi" size={30} /></span>
+        <span onClick={() => setMenuOpen((o) => !o)}><Avatar name="ERE Homes" size={30} /></span>
         {menuOpen && (
           <>
             <div className="acct-scrim" onClick={() => setMenuOpen(false)} />
             <div className="avatar-menu">
-              <div className="am-head"><div className="am-name">Karim Rahimi</div><div className="am-mail">marketing@erehomes.ae</div></div>
+              <div className="am-head"><div className="am-name">ERE Homes</div><div className="am-mail">marketing@erehomes.ae</div></div>
               <button className="am-item" onClick={() => { setMenuOpen(false); enableAlerts(); }}><Icon d={IC.bell} s={16} />Lead alerts</button>
               <a className="am-item" href="https://www.twilio.com/docs/whatsapp" target="_blank" rel="noreferrer"><Icon d={IC.help} s={16} />Docs &amp; support</a>
               <button className="am-item danger" onClick={logout}><Icon d={IC.logout} s={16} />Sign out</button>

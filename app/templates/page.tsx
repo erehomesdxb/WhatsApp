@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { Icon, IC, Badge, PageHead, Skeleton, CHECK2, sm, kindOf, TYPE_LABEL, LANG_LABEL, isRTL, renderVars, fmtUpdated, LANGUAGES } from "@/lib/ui";
-import { SEED_TEMPLATES, type Tpl } from "@/lib/fixtures";
+import { type Tpl } from "@/lib/types";
 
 type Btn = { type: "url" | "phone" | "quick-reply"; title: string; url?: string; phone?: string };
 
@@ -124,11 +124,9 @@ function Composer({ onClose, onCreated, seed }: { onClose: () => void; onCreated
       setMsg(`Submitted “${name}” to Meta for review. Status: ${data.status || "pending"}.`);
       setBusy(false);
       setTimeout(() => onCreated({ ...localTpl, sid: data.sid || localTpl.sid, status: data.status === "approved" ? "approved" : "pending" }), 850);
-    } catch {
-      // No live backend — add the template optimistically so the flow completes.
-      setMsg(`Submitted “${name}” to Meta for review. Status: pending.`);
+    } catch (e: any) {
+      setErr(e.message || "Failed to submit template. Please try again.");
       setBusy(false);
-      setTimeout(() => onCreated(localTpl), 850);
     }
   }
 
@@ -423,8 +421,9 @@ const FILTERS = [
 ];
 
 export default function Templates() {
-  const [tpls, setTpls] = useState<Tpl[]>(SEED_TEMPLATES);
+  const [tpls, setTpls] = useState<Tpl[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
   const [composer, setComposer] = useState(false);
   const [seed, setSeed] = useState<Seed>(null);
   const [active, setActive] = useState<Tpl | null>(null);
@@ -435,14 +434,15 @@ export default function Templates() {
 
   async function load() {
     setLoading(true);
+    setLoadErr(null);
     try {
       const res = await fetch("/api/templates");
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed");
-      if ((data.templates || []).length) setTpls(data.templates);
-      else setTpls(SEED_TEMPLATES);
-    } catch {
-      setTpls(SEED_TEMPLATES); // demo fallback
+      if (!res.ok) throw new Error(data.error || "Failed to load templates");
+      setTpls(data.templates || []);
+    } catch (e: any) {
+      setTpls([]);
+      setLoadErr(e.message || "Failed to load templates");
     } finally {
       setLoading(false);
     }
@@ -527,7 +527,9 @@ export default function Templates() {
         </div>
 
         <div className="panel">
-          {loading ? <Skeleton rows={6} /> : filtered.length > 0 ? (
+          {loadErr ? (
+            <div className="empty"><div className="ei"><Icon d={IC.tmpl} s={22} /></div><h4>Couldn’t load templates</h4><div>{loadErr}</div></div>
+          ) : loading ? <Skeleton rows={6} /> : filtered.length > 0 ? (
             <table className="ttable">
               <thead><tr><th>Template</th><th>Type</th><th>Category</th><th>Language</th><th>Content</th><th>Status</th><th>Updated</th><th></th></tr></thead>
               <tbody>{filtered.map((t) => <Row key={t.sid} t={t} selected={active?.sid === t.sid} onOpen={setActive} />)}</tbody>

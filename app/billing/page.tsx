@@ -1,120 +1,95 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Icon, IC, PageHead, downloadCSV, downloadText } from "@/lib/ui";
-import { USAGE, INVOICES } from "@/lib/fixtures";
+import { Icon, IC, PageHead, downloadCSV } from "@/lib/ui";
 
 const TWILIO_BILLING = "https://console.twilio.com/us1/billing/manage-billing/billing-overview";
 
-export default function Billing() {
-  const monthTotalFixture = USAGE.reduce((a, u) => a + u.count * u.rate, 0);
-  const [balance, setBalance] = useState("$642.18");
-  const [monthTotal, setMonthTotal] = useState(monthTotalFixture);
+type Data = {
+  balance: { balance: string; currency: string } | null;
+  range: { days: number; since: string };
+  spend: { total: number; allTime: number; avgPerDay: number; currency: string };
+  byDay: { day: string; spend: number }[];
+};
 
-  // Live Twilio balance + spend when configured; otherwise the seeded numbers.
+export default function Billing() {
+  const [data, setData] = useState<Data | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Live Twilio balance + spend (Usage Records). No seeded numbers — detailed
+  // invoices and payment method are managed in the Twilio Console.
   useEffect(() => {
     fetch("/api/billing?days=30")
       .then((r) => r.json())
-      .then((d) => {
-        if (d?.balance) setBalance(`${d.balance.currency === "USD" ? "$" : d.balance.currency + " "}${parseFloat(d.balance.balance).toFixed(2)}`);
-        if (d?.spend && typeof d.spend.total === "number" && d.spend.total > 0) setMonthTotal(d.spend.total);
-      })
-      .catch(() => {});
+      .then((d) => setData(d))
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
-  const convCount = USAGE.reduce((a, u) => a + u.count, 0);
+  const sym = (c?: string) => (c === "USD" || !c ? "$" : c + " ");
+  const balance = data?.balance ? `${sym(data.balance.currency)}${parseFloat(data.balance.balance).toFixed(2)}` : "—";
+  const spend = data?.spend;
+  const cur = spend?.currency || data?.balance?.currency;
+  const byDay = data?.byDay || [];
+  const maxDay = Math.max(0.0001, ...byDay.map((d) => d.spend));
 
   const exportStatement = () => {
-    const rows: (string | number)[][] = [["Category", "Count", "Rate (USD)", "Cost (USD)"]];
-    USAGE.forEach((u) => rows.push([u.cat, u.count, u.rate.toFixed(4), (u.count * u.rate).toFixed(2)]));
-    rows.push(["Total", "", "", monthTotalFixture.toFixed(2)]);
-    rows.push([]);
-    rows.push(["Invoice", "Date", "Amount (USD)", "Status"]);
-    INVOICES.forEach((i) => rows.push([i.id, i.date, i.amount.toFixed(2), "Paid"]));
+    const rows: (string | number)[][] = [["Date", `Spend (${cur || "USD"})`]];
+    byDay.forEach((d) => rows.push([d.day, d.spend.toFixed(4)]));
+    if (spend) rows.push(["Total", spend.total.toFixed(2)]);
     downloadCSV("ere-billing-statement.csv", rows);
-  };
-
-  const downloadInvoice = (inv: typeof INVOICES[number]) => {
-    const lines = [
-      "ERE Homes — WhatsApp messaging invoice",
-      "",
-      `Invoice:  ${inv.id}`,
-      `Date:     ${inv.date}`,
-      `Status:   Paid`,
-      `Amount:   $${inv.amount.toFixed(2)} USD`,
-      "",
-      "Billed to: ERE Homes Real Estate Brokers, Dubai, UAE",
-      "Payment:   Visa •••• 4417",
-      "",
-      "Charges for WhatsApp Business conversations (marketing, utility,",
-      "service and authentication) via Twilio for the billing period.",
-    ];
-    downloadText(`${inv.id}.txt`, lines.join("\n"));
   };
 
   return (
     <div className="page"><div className="maxw">
-      <PageHead title="Billing & usage" sub="WhatsApp conversation charges, payment method and invoices for this Twilio project.">
-        <button className="btn btn-sec" onClick={exportStatement}><Icon d={IC.dl} s={15} />Download statement</button>
+      <PageHead title="Billing & usage" sub="Live Twilio balance and spend for this project. Invoices and payment method are managed in the Twilio Console.">
+        <button className="btn btn-sec" onClick={exportStatement} disabled={!byDay.length}><Icon d={IC.dl} s={15} />Download statement</button>
         <a className="btn btn-primary" href={TWILIO_BILLING} target="_blank" rel="noreferrer"><Icon d={IC.plus} s={16} />Add funds</a>
       </PageHead>
 
-      <div className="kpis k4">
-        <div className="kpi"><div className="kl">Account balance</div><div className="kv">{balance}</div><div className="ks">auto-recharge on</div></div>
-        <div className="kpi"><div className="kl">This month</div><div className="kv">${monthTotal.toFixed(2)}</div><div className="ks">1–5 Jun 2026</div></div>
-        <div className="kpi"><div className="kl">Conversations</div><div className="kv">{convCount.toLocaleString()}</div><div className="ks">billable this period</div></div>
-        <div className="kpi"><div className="kl">Next invoice</div><div className="kv">01 Jul</div></div>
-      </div>
+      {loading && <div className="empty sm">Loading…</div>}
 
-      <div className="grid-2">
-        <div className="card">
-          <div className="card-head"><div className="card-t">Usage this period</div><div className="card-meta">By conversation category</div></div>
-          <table className="ttable flush">
-            <thead><tr><th>Category</th><th>Count</th><th>Rate</th><th style={{ textAlign: "right" }}>Cost</th></tr></thead>
-            <tbody>
-              {USAGE.map((u) => (
-                <tr key={u.cat} className="norow">
-                  <td>{u.cat}</td>
-                  <td className="tcol-muted">{u.count.toLocaleString()}</td>
-                  <td className="tcol-muted mono">${u.rate.toFixed(4)}</td>
-                  <td style={{ textAlign: "right" }} className="mono">${(u.count * u.rate).toFixed(2)}</td>
-                </tr>
-              ))}
-              <tr className="totalrow"><td colSpan={3}>Total</td><td style={{ textAlign: "right" }} className="mono">${monthTotalFixture.toFixed(2)}</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div className="card">
-          <div className="card-head"><div className="card-t">Payment method</div></div>
-          <div className="paycard">
-            <div className="pc-row"><span className="pc-brand"><Icon d={IC.card} s={18} /> Visa</span><span className="mono">•••• 4417</span></div>
-            <div className="pc-meta">Expires 09 / 28 · Karim Rahimi</div>
+      {!loading && (
+        <>
+          <div className="kpis k4">
+            <div className="kpi"><div className="kl">Account balance</div><div className="kv">{balance}</div><div className="ks">live Twilio balance</div></div>
+            <div className="kpi"><div className="kl">Spend · last {data?.range.days ?? 30}d</div><div className="kv">{spend ? `${sym(cur)}${spend.total.toFixed(2)}` : "—"}</div></div>
+            <div className="kpi"><div className="kl">Avg / day</div><div className="kv">{spend ? `${sym(cur)}${spend.avgPerDay.toFixed(2)}` : "—"}</div></div>
+            <div className="kpi"><div className="kl">Spend · all time</div><div className="kv">{spend ? `${sym(cur)}${spend.allTime.toFixed(2)}` : "—"}</div></div>
           </div>
-          <div className="recharge">
-            <div className="rc-row"><span>Auto-recharge</span><span className="pill-on">On</span></div>
-            <div className="rc-meta">When balance falls below $100, add $500 automatically.</div>
-            <a className="btn btn-sec btn-sm" style={{ marginTop: 12 }} href={TWILIO_BILLING} target="_blank" rel="noreferrer">Edit settings</a>
-          </div>
-        </div>
-      </div>
 
-      <div className="card">
-        <div className="card-head"><div className="card-t">Invoices</div></div>
-        <table className="ttable flush">
-          <thead><tr><th>Invoice</th><th>Date</th><th>Amount</th><th>Status</th><th style={{ textAlign: "right" }}></th></tr></thead>
-          <tbody>
-            {INVOICES.map((inv) => (
-              <tr key={inv.id} className="norow">
-                <td className="mono">{inv.id}</td>
-                <td className="tcol-muted">{inv.date}</td>
-                <td className="mono">${inv.amount.toFixed(2)}</td>
-                <td><span className="badge" style={{ color: "#fff", background: "var(--green-dot)", borderColor: "var(--green-dot)" }}><span className="bd" style={{ background: "rgba(255,255,255,.9)" }} />Paid</span></td>
-                <td style={{ textAlign: "right" }}><a className="card-link" href="#" onClick={(e) => { e.preventDefault(); downloadInvoice(inv); }}>PDF</a></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          <div className="grid-2">
+            <div className="card">
+              <div className="card-head"><div className="card-t">Spend by day</div><div className="card-meta">since {data?.range.since}</div></div>
+              {byDay.length === 0 ? (
+                <div className="empty sm">No spend recorded in this range yet.</div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 150, paddingTop: 10 }}>
+                  {byDay.map((d) => (
+                    <div key={d.day} style={{ flex: 1, textAlign: "center" }} title={`${d.day}: ${sym(cur)}${d.spend.toFixed(2)}`}>
+                      <div style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end", height: 120 }}>
+                        <div style={{ height: `${(d.spend / maxDay) * 100}%`, background: "var(--green-dot)", minHeight: d.spend > 0 ? 2 : 0, borderRadius: "3px 3px 0 0" }} />
+                      </div>
+                      <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>{d.day.slice(5)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="card">
+              <div className="card-head"><div className="card-t">Payment & invoices</div></div>
+              <div className="paycard">
+                <div className="pc-row"><span className="pc-brand"><Icon d={IC.card} s={18} /> Twilio billing</span></div>
+                <div className="pc-meta">Payment method, auto-recharge and downloadable invoices live in the Twilio Console.</div>
+              </div>
+              <div className="recharge">
+                <div className="rc-meta">Top up your balance or change billing settings directly in Twilio.</div>
+                <a className="btn btn-sec btn-sm" style={{ marginTop: 12 }} href={TWILIO_BILLING} target="_blank" rel="noreferrer">Open Twilio billing ↗</a>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div></div>
   );
 }

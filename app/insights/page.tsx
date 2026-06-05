@@ -1,43 +1,89 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Icon, IC, PageHead, downloadCSV } from "@/lib/ui";
-import { TPL_PERF, COMMUNITIES } from "@/lib/fixtures";
+import { supabaseBrowser } from "@/lib/supabase";
 
 const RANGES: [string, string, number][] = [["7d", "7 days", 7], ["30d", "30 days", 30], ["90d", "90 days", 90]];
 
+type Perf = { name: string; sent: number; replyRate: number };
+type DeliveryRow = { label: string; n: number };
+
 export default function Insights() {
   const [range, setRange] = useState("30d");
-  const [kpi, setKpi] = useState({ sent: "8,420", delivery: "97.4%", read: "68%", reply: "9.1%", leads: "214" });
+  const [kpi, setKpi] = useState<{ sent: string; delivery: string; read: string; reply: string; leads: string }>({ sent: "—", delivery: "—", read: "—", reply: "—", leads: "—" });
+  const [perf, setPerf] = useState<Perf[] | null>(null);
+  const [delivery, setDelivery] = useState<DeliveryRow[] | null>(null);
 
-  // Pull live totals for the KPIs that the messaging API can answer; the two
-  // tables and the reply/leads figures use the seeded reference data.
+  // Everything here is live: messaging totals from Twilio, template reply rates
+  // from our message log, lead counts from Supabase. Nothing is seeded.
   useEffect(() => {
     const days = RANGES.find((r) => r[0] === range)?.[2] ?? 30;
+    let on = true;
+    setPerf(null);
+    setDelivery(null);
+
     fetch(`/api/insights?days=${days}`)
       .then((r) => r.json())
       .then((d) => {
+        if (!on) return;
         const t = d?.totals;
-        if (!t || !t.outbound) return;
+        if (!t) return;
+        const reached = (t.delivered || 0) + (t.read || 0);
         setKpi((k) => ({
           ...k,
-          sent: Number(t.outbound).toLocaleString(),
-          delivery: `${t.deliveryRate}%`,
-          read: `${t.readRate}%`,
+          sent: Number(t.outbound || 0).toLocaleString(),
+          delivery: `${t.deliveryRate ?? 0}%`,
+          read: `${t.readRate ?? 0}%`,
+          reply: t.outbound ? `${Math.round(((t.inbound || 0) / t.outbound) * 100)}%` : "0%",
         }));
+        setDelivery([
+          { label: "Sent", n: t.outbound || 0 },
+          { label: "Delivered", n: reached },
+          { label: "Read", n: t.read || 0 },
+          { label: "Failed / undelivered", n: (t.failed || 0) + (t.undelivered || 0) },
+          { label: "Inbound replies", n: t.inbound || 0 },
+        ]);
       })
-      .catch(() => {});
+      .catch(() => { if (on) setDelivery([]); });
+
+    // Template reply rates (last 90 days, server-computed) + names.
+    Promise.all([
+      fetch("/api/templates/performance").then((r) => r.json()).catch(() => ({})),
+      fetch("/api/templates").then((r) => r.json()).catch(() => ({})),
+    ]).then(([p, tpl]) => {
+      if (!on) return;
+      const stats = p?.stats || {};
+      const names: Record<string, string> = {};
+      for (const t of tpl?.templates || []) names[t.sid] = t.name;
+      const rows: Perf[] = Object.entries(stats)
+        .map(([sid, s]: [string, any]) => ({ name: names[sid] || sid, sent: s.sent || 0, replyRate: s.replyRate || 0 }))
+        .sort((a, b) => b.replyRate - a.replyRate || b.sent - a.sent)
+        .slice(0, 8);
+      setPerf(rows);
+    });
+
+    // Leads created (conversations marked hot/warm/won).
+    supabaseBrowser()
+      .from("conversations")
+      .select("id", { count: "exact", head: true })
+      .in("lead_status", ["hot", "warm", "won"])
+      .then(({ count }) => { if (on && typeof count === "number") setKpi((k) => ({ ...k, leads: count.toLocaleString() })); });
+
+    return () => { on = false; };
   }, [range]);
 
   const exportCSV = () => {
-    const rows: (string | number)[][] = [["Section", "Name", "Sent", "Reply rate %"]];
-    TPL_PERF.forEach((t) => rows.push(["Template", t.name, t.sent, Math.round((t.reply / t.sent) * 100)]));
-    COMMUNITIES.forEach((c) => rows.push(["Community", c.name, c.sent, c.reply]));
+    const rows: (string | number)[][] = [["Section", "Name", "Value 1", "Value 2"]];
+    (delivery || []).forEach((d) => rows.push(["Delivery", d.label, d.n, ""]));
+    (perf || []).forEach((t) => rows.push(["Template", t.name, `${t.sent} sent`, `${t.replyRate}% reply`]));
     downloadCSV(`ere-insights-${range}.csv`, rows);
   };
 
+  const maxDelivery = Math.max(1, ...(delivery || []).map((d) => d.n));
+
   return (
     <div className="page"><div className="maxw">
-      <PageHead title="Insights" sub="WhatsApp messaging performance across templates and communities.">
+      <PageHead title="Insights" sub="Live WhatsApp messaging performance from Twilio and your message log.">
         <div className="seg">
           {RANGES.map(([id, l]) => (
             <button key={id} className={range === id ? "on" : ""} onClick={() => setRange(id)}>{l}</button>
@@ -58,25 +104,31 @@ export default function Insights() {
         <div className="card">
           <div className="card-head"><div className="card-t">Top templates</div><div className="card-meta">by reply rate</div></div>
           <div className="perf">
-            {TPL_PERF.map((t) => (
+            {(perf || []).map((t) => (
               <div className="perf-row" key={t.name}>
                 <div className="perf-name mono">{t.name}</div>
                 <div className="perf-stat">{t.sent} sent</div>
-                <div className="perf-stat strong">{Math.round((t.reply / t.sent) * 100)}% reply</div>
+                <div className="perf-stat strong">{t.replyRate}% reply</div>
               </div>
             ))}
+            {perf === null && <div className="empty sm">Loading…</div>}
+            {perf !== null && perf.length === 0 && <div className="empty sm">No template sends yet.</div>}
           </div>
         </div>
         <div className="card">
-          <div className="card-head"><div className="card-t">By community</div><div className="card-meta">messages sent</div></div>
+          <div className="card-head"><div className="card-t">Delivery breakdown</div><div className="card-meta">this period</div></div>
           <div className="perf">
-            {COMMUNITIES.map((c) => (
-              <div className="perf-row" key={c.name}>
-                <div className="perf-name">{c.name}</div>
-                <div className="perf-stat">{c.sent.toLocaleString()} sent</div>
-                <div className="perf-stat strong">{c.reply}% reply</div>
+            {(delivery || []).map((d) => (
+              <div className="perf-row" key={d.label} style={{ alignItems: "center" }}>
+                <div className="perf-name" style={{ minWidth: 150 }}>{d.label}</div>
+                <div style={{ flex: 1, background: "#EEEEEE", borderRadius: 6, height: 18, overflow: "hidden", margin: "0 10px" }}>
+                  <div style={{ width: `${(d.n / maxDelivery) * 100}%`, height: "100%", background: "var(--green-dot)", minWidth: d.n ? 3 : 0, borderRadius: 6 }} />
+                </div>
+                <div className="perf-stat strong">{d.n.toLocaleString()}</div>
               </div>
             ))}
+            {delivery === null && <div className="empty sm">Loading…</div>}
+            {delivery !== null && delivery.length === 0 && <div className="empty sm">No messages in this range.</div>}
           </div>
         </div>
       </div>
